@@ -1,7 +1,7 @@
 # This file is part of sbi, a toolkit for simulation-based inference. sbi is licensed
 # under the Affero General Public License v3, see <https://www.gnu.org/licenses/>.
 
-
+import time
 from typing import Any, Callable, Dict, Optional, Union
 from copy import deepcopy
 
@@ -16,11 +16,13 @@ from sbi.sbi_types import TensorboardSummaryWriter
 from sbi.utils import del_entries
 from torch.nn.functional import kl_div
 
+
 class SNPE_B(PosteriorEstimator):
     def __init__(
         self,
-        observation: Tensor, 
+        observation: Tensor,
         bandwith: float = 0.01,
+        prop_prior: float = 0.1,
         prior: Optional[Distribution] = None,
         density_estimator: Union[str, Callable] = "maf",
         device: str = "cpu",
@@ -40,9 +42,10 @@ class SNPE_B(PosteriorEstimator):
 
         self._observation = observation
         self._bandwith = bandwith
+        self._prop_prior = prop_prior
         
         
-        kwargs = del_entries(locals(), entries=("self", "__class__", "observation", "bandwith"))
+        kwargs = del_entries(locals(), entries=("self", "__class__", "observation", "bandwith", "prop_prior"))
         super().__init__(**kwargs)
 
     def _log_prob_proposal_posterior(
@@ -60,24 +63,22 @@ class SNPE_B(PosteriorEstimator):
             Log probability of proposal posterior.
         """
  
-        batch_size = theta.shape[0]
-        
-        # Evaluate prior.
-        #log_prob_prior = self._prior.log_prob(theta).reshape(batch_size)
 
+        # Evaluate prior.
         log_prob_prior = self._prior.log_prob(theta)
         utils.assert_all_finite(log_prob_prior, "prior eval.")
+        prior_theta = torch.exp(log_prob_prior)
 
         # Evaluate proposal.
         log_prob_proposal = proposal.log_prob(theta)
-        
         utils.assert_all_finite(log_prob_proposal, "proposal posterior eval")
+        proposal_theta = torch.exp(log_prob_proposal)
+
 
         # Compute the importance weights.
-        importance_weights = torch.exp(log_prob_prior-log_prob_proposal)
-        # print(log_prob_prior)
-        # print()
-        # print(log_prob_proposal)
+        #importance_weights = torch.exp(log_prob_prior-log_prob_proposal)
+        importance_weights = prior_theta/(self._prop_prior*prior_theta + (1-self._prop_prior)*proposal_theta)
+
         return importance_weights*self._neural_net.log_prob(theta, x)
 
 
@@ -85,17 +86,29 @@ class SNPE_B(PosteriorEstimator):
         #print((torch.linalg.vector_norm(x-self._observation, dim=1))/self._bandwith)
         #return torch.exp(-(torch.linalg.vector_norm(x-self._observation, dim=1))/self._bandwith)
         # for x in batch_x:
-        theta = self._prior.sample((100,))
+        
+        theta = self._prior.sample((100, ))
+
         posterior_obs = deepcopy(self._posterior)
         posterior_x = deepcopy(self._posterior)
+
         proposal_obs = posterior_obs.set_default_x(self._observation)
+   
         calibration_kernel = []
+
         for x_item in x:
             proposal_x = posterior_x.set_default_x(x_item)
+            #kl_start = time.time()
             kl_divergence = kl_div(proposal_x.log_prob(theta), proposal_obs.log_prob(theta), log_target=True)
+            #kl_end = time.time()
+            #print("kl", kl_end-kl_start)
             calibration_kernel.append(torch.exp(-kl_divergence/self._bandwith))
-
         return torch.tensor(calibration_kernel)
+
+    # def kl_divergence(self, x_item, posterior_x, proposal_obs, theta):
+    #     proposal_x = posterior_x.set_default_x(x_item)
+    #     kl_divergence = kl_div(proposal_x.log_prob(theta), proposal_obs.log_prob(theta), log_target=True)
+    #     return kl_divergence
 
     # def weight_for_loss(self, calibration_kernel: Callable, theta: Tensor, x: Tensor, x_0: Tensor) -> Tensor:
     #     """
