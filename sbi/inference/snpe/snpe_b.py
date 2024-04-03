@@ -15,6 +15,11 @@ from sbi.inference.snpe.snpe_base import PosteriorEstimator
 from sbi.sbi_types import TensorboardSummaryWriter
 from sbi.utils import del_entries
 from torch.nn.functional import kl_div
+import ray
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+ray.init
 
 
 class SNPE_B(PosteriorEstimator):
@@ -24,7 +29,7 @@ class SNPE_B(PosteriorEstimator):
         bandwith: float = 0.01,
         prop_prior: float = 0.1,
         prior: Optional[Distribution] = None,
-        density_estimator: Union[str, Callable] = "maf",
+        density_estimator: Union[str, Callable] = "mdn",
         device: str = "cpu",
         logging_level: Union[int, str] = "WARNING",
         summary_writer: Optional[TensorboardSummaryWriter] = None,
@@ -38,7 +43,33 @@ class SNPE_B(PosteriorEstimator):
         This class implements SNPE-B. SNPE-B trains across multiple rounds with a
         importance-weighted log-loss. This will make training converge directly to the true posterior.
         Thus, SNPE-B is not limited to Gaussian proposal.
+
+        Args:
+            prior: A probability distribution that expresses prior knowledge about the
+                parameters, e.g. which ranges are meaningful for them.
+            density_estimator: If it is a string, use a pre-configured network of the
+                provided type (one of nsf, maf, mdn, made). Alternatively, a function
+                that builds a custom neural network can be provided. The function will
+                be called with the first batch of simulations (theta, x), which can
+                thus be used for shape inference and potentially for z-scoring. It
+                needs to return a PyTorch `nn.Module` implementing the density
+                estimator. The density estimator needs to provide the methods
+                `.log_prob` and `.sample()`.
+            device: Training device, e.g., "cpu", "cuda" or "cuda:{0, 1, ...}".
+            logging_level: Minimum severity of messages to log. One of the strings
+                INFO, WARNING, DEBUG, ERROR and CRITICAL.
+            summary_writer: A tensorboard `SummaryWriter` to control, among others, log
+                file location (default is `<current working directory>/logs`.)
+            show_progress_bars: Whether to show a progressbar during training.
         """
+
+        # Catch invalid inputs.
+        
+        # if not ((density_estimator == "mdn") or callable(density_estimator)):
+        #     raise TypeError(
+        #         "The `density_estimator` passed to SNPE_B needs to be a "
+        #         "callable or the string 'mdn'!"
+        #     )
 
         self._observation = observation
         self._bandwith = bandwith
@@ -49,37 +80,55 @@ class SNPE_B(PosteriorEstimator):
         super().__init__(**kwargs)
 
     def _log_prob_proposal_posterior(
-        self, theta: Tensor, x: Tensor, masks: Tensor, proposal: Optional[Any],
+        self, 
+        theta: Tensor, 
+        x: Tensor, 
+        masks: Tensor, 
+        proposal: Optional[Any],
     ) -> Tensor:
         """
         Return importance-weighted log probability (Lueckmann, Goncalves et al., 2017).
 
         Args:
             theta: Batch of parameters θ.
-            x_0: Observation.
-            masks: Whether to retrain with prior loss (for each prior sample).
+            x: Batch of data.
+            masks: Indicate if the data (theta, x) of the batch 
+                are sampled from the prior or from the proposal.
+            proposal: Proposal distribution.
 
         Returns:
-            Log probability of proposal posterior.
+            Importance-weighted log probability.
         """
- 
 
-        # Evaluate prior.
-        log_prob_prior = self._prior.log_prob(theta)
+        log_prob_prior = torch.zeros(theta.size(0))
+        log_prob_proposal = torch.zeros(theta.size(0))
+
+        # Evaluate prior
+        log_prob_prior[torch.logical_not(masks.squeeze())] = self._prior.log_prob(theta[torch.logical_not(masks.squeeze()),:])
         utils.assert_all_finite(log_prob_prior, "prior eval.")
-        prior_theta = torch.exp(log_prob_prior)
-
+    
+        #log_prob_prior = self._prior.log_prob(theta)
+        
+      
         # Evaluate proposal.
-        log_prob_proposal = proposal.log_prob(theta)
+        log_prob_proposal[torch.logical_not(masks.squeeze())] = proposal.log_prob(theta[torch.logical_not(masks.squeeze()),:])
         utils.assert_all_finite(log_prob_proposal, "proposal posterior eval")
-        proposal_theta = torch.exp(log_prob_proposal)
-
-
+        
+        # theta_prior = self._prior.sample((1000, ))
+        # theta_proposal = proposal.sample((1000, ))
+        
         # Compute the importance weights.
-        #importance_weights = torch.exp(log_prob_prior-log_prob_proposal)
-        importance_weights = prior_theta/(self._prop_prior*prior_theta + (1-self._prop_prior)*proposal_theta)
+        importance_weights = torch.exp(log_prob_prior-log_prob_proposal)
+     
+        # if torch.any(importance_weights> 1000):
+        #     sns.kdeplot(theta_prior[:,1], label="prior")
+        #     sns.kdeplot(theta_proposal[:,1], label="proposal")
+        #     plt.legend()
+        #     plt.show()
+        #importance_weights = prior_theta/(self._prop_prior*prior_theta + (1-self._prop_prior)*proposal_theta)
 
         return importance_weights*self._neural_net.log_prob(theta, x)
+    
 
 
     def _calibration_kernel(self, x: Tensor):
@@ -103,6 +152,10 @@ class SNPE_B(PosteriorEstimator):
             #kl_end = time.time()
             #print("kl", kl_end-kl_start)
             calibration_kernel.append(torch.exp(-kl_divergence/self._bandwith))
+        # print("sans para", calibration_kernel)
+        # futures = [divergence.remote(posterior_x, proposal_obs, x_item, theta, self._bandwith) for x_item in x]
+        # calibration_kernel = ray.get(futures)
+        #print("para", calibration_kernel)
         return torch.tensor(calibration_kernel)
 
     # def kl_divergence(self, x_item, posterior_x, proposal_obs, theta):
@@ -179,18 +232,13 @@ class SNPE_B(PosteriorEstimator):
         clip_max_norm: Optional[float] = 5.0,
         calibration_kernel: Optional[Callable] = None,
         resume_training: bool = False,
+        force_first_round_loss: bool = False,
+        discard_prior_samples: bool = False,
         retrain_from_scratch: bool = False,
         show_train_summary: bool = False,
         dataloader_kwargs: Optional[Dict] = None,
     ) -> DensityEstimator:
-        r"""Return density estimator that approximates the proposal posterior.
-
-        [1] _Fast epsilon-free Inference of Simulation Models with Bayesian Conditional
-            Density Estimation_, Papamakarios et al., NeurIPS 2016,
-            https://arxiv.org/abs/1605.06376.
-
-        Training is performed with maximum likelihood on samples from the latest round,
-        which leads the algorithm to converge to the proposal posterior.
+        r"""Return density estimator that approximates directly the distribution $p(\theta|x)$.
 
         Args:
             training_batch_size: Training batch size.
@@ -205,7 +253,6 @@ class SNPE_B(PosteriorEstimator):
                 prevent exploding gradients. Use None for no clipping.
             calibration_kernel: A function to calibrate the loss with respect to the
                 simulations `x`. See Lueckmann, Gonçalves et al., NeurIPS 2017.
-            importance_weights: The importance weights to add in the loss
             resume_training: Can be used in case training time is limited, e.g. on a
                 cluster. If `True`, the split between train and validation set, the
                 optimizer, the number of epochs, and the best validation log-prob will
@@ -213,6 +260,9 @@ class SNPE_B(PosteriorEstimator):
             force_first_round_loss: If `True`, train with maximum likelihood,
                 i.e., potentially ignoring the correction for using a proposal
                 distribution different from the prior.
+            discard_prior_samples: Whether to discard samples simulated in round 1, i.e.
+                from the prior. Training may be sped up by ignoring such less targeted
+                samples.
             retrain_from_scratch: Whether to retrain the conditional density
                 estimator for the posterior from scratch each round. Not supported for
                 SNPE-A.
@@ -220,10 +270,6 @@ class SNPE_B(PosteriorEstimator):
                 loss and leakage after the training.
             dataloader_kwargs: Additional or updated kwargs to be passed to the training
                 and validation dataloaders (like, e.g., a collate_fn)
-            component_perturbation: The standard deviation applied to all weights and
-                biases when, in the last round, the Mixture of Gaussians is build from
-                a single Gaussian. This value can be problem-specific and also depends
-                on the number of mixture components.
 
         Returns:
             Density estimator that approximates the distribution $p(\theta|x)$.
@@ -238,11 +284,18 @@ class SNPE_B(PosteriorEstimator):
 
         self._round = max(self._data_round_index)
         
-        if self._round > 0:
-            # Compute the calibration kernel
+        # if self._round > 0:
+        #     # Compute the calibration kernel
 
-            kwargs['calibration_kernel'] = self._calibration_kernel
+        #     kwargs['calibration_kernel'] = self._calibration_kernel
 
-            
-            
         return super().train(**kwargs)
+
+
+
+
+@ray.remote
+def divergence(posterior_x, proposal_obs, x_item, theta, bandwith):
+    proposal_x = posterior_x.set_default_x(x_item)
+    kl_divergence = kl_div(proposal_x.log_prob(theta), proposal_obs.log_prob(theta), log_target=True)
+    return torch.exp(-kl_divergence/bandwith)
