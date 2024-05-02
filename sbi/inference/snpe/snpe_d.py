@@ -81,112 +81,228 @@ class SNPE_D(PosteriorEstimator):
         kwargs = del_entries(locals(), entries=("self", "__class__"))
         super().__init__(**kwargs)
 
-    # def _loss(
-    #     self,
-    #     theta: Tensor,
-    #     x: Tensor,
-    #     masks: Tensor,
-    #     proposal: Optional[Any],
-    #     calibration_kernel: Callable,
-    #     force_first_round_loss: bool = False,
-    # ) -> Tensor:
-    #     """
-    #     Return loss.
+    def _loss(
+        self,
+        theta: Tensor,
+        x: Tensor,
+        masks: Tensor,
+        proposal: Optional[Any],
+        calibration_kernel: Callable,
+        force_first_round_loss: bool = False,
+    ) -> Tensor:
+        """
+        Return loss.
 
-    #     Args:
-    #         theta: Batch of parameters θ.
-    #         x: Batch of data.
-    #         masks: Indicate if the data (theta, x) of the batch 
-    #             are sampled from the prior or from the proposal.
-    #         proposal: Proposal distribution.
+        Args:
+            theta: Batch of parameters θ.
+            x: Batch of data.
+            masks: Indicate if the data (theta, x) of the batch 
+                are sampled from the prior or from the proposal.
+            proposal: Proposal distribution.
 
-    #     Returns:
-    #         Importance-weighted log probability.
-    #     """
-    #     from torch.autograd import grad
-    #     from torch.autograd.functional import hessian
-    #     from torch.autograd.functional import vhp
-    #     from torch.distributions.multivariate_normal import MultivariateNormal
+        Returns:
+            Importance-weighted log probability.
+        """
+        from torch.autograd import grad
+        from torch.autograd.functional import hessian
+        from torch.autograd.functional import vhp
+        from torch.distributions.multivariate_normal import MultivariateNormal
         
         
-    #     with torch.enable_grad():
-    #         # new_theta = torch.tensor([[1.0,2.0],[2.0,4.0], [3.0,6.0]], requires_grad=True)
+        with torch.enable_grad():
+            # new_theta = torch.tensor([[1.0,2.0],[2.0,4.0], [3.0,6.0]], requires_grad=True)
             
-    #         # def logq(theta):
+            # def logq(theta):
                 
-    #         #     return torch.sum(torch.log(torch.sum(theta, dim=1)), dim=0)
-    #         # print(torch.log(torch.sum(new_theta, dim=1)))
-    #         # print(logq(new_theta))
-    #         new_theta = theta.requires_grad_(True)
-    #         prop = 1.0/(self._round+1)
-    #         last_proposal = torch.zeros(theta.size(0))
-    #         for density in self._proposal_roundwise:
-    #             last_proposal += prop*torch.exp(density.log_prob(theta))
-    #         def logq(theta):
-    #             return torch.sum(self._neural_net.log_prob(theta, x) + torch.log(last_proposal) - self._prior.log_prob(theta))
+            #     return torch.sum(torch.log(torch.sum(theta, dim=1)), dim=0)
+            # print(torch.log(torch.sum(new_theta, dim=1)))
+            # print(logq(new_theta))
+           
+            new_theta = theta.requires_grad_(True)
+          
+            # prop = 1.0/(self._round+1)
+            # last_proposal = torch.zeros(theta.size(0))
+            # for density in self._proposal_roundwise:
+            #     last_proposal += prop*torch.exp(density.log_prob(theta))
+            last_proposal = torch.zeros((len(self._proposal_roundwise), theta.size(0)))
+            for i in range(len(self._proposal_roundwise)):
+                last_proposal[i] = self._proposal_roundwise[i].log_prob(new_theta)
             
-    #         d_log_q_d_theta = grad(logq(new_theta), new_theta, create_graph=True)
-    #         # print("d" , d_log_q_d_theta)
+            log_proposal = torch.logsumexp(input=last_proposal, dim=0)
+            log_proposal = -torch.log(torch.tensor([self._round+1])) + log_proposal
             
-    #         first_deriv = torch.sum(d_log_q_d_theta[0]**2, dim=1)
-    #         #print(first_deriv)
-    #         second_deriv = torch.zeros(len(d_log_q_d_theta[0]))
-    #         for i in range (theta.size(1)):
-                
-    #             second_deriv += grad(torch.sum(d_log_q_d_theta[0], dim=0)[i], new_theta, create_graph=True)[0][:,i]
+            # print("function", self._neural_net.log_prob(theta, x) + log_proposal - self._prior.log_prob(theta))
+            # print("first round", self._neural_net.log_prob(theta, x))
+
+            #-------------SUM---------------#
+            def logq(theta):
+                return torch.sum(self._neural_net.log_prob(theta, x) + log_proposal - self._prior.log_prob(theta))
+                #return torch.sum(self._neural_net.log_prob(theta, x))
             
-    #         #print("s", second_deriv)
+            d_log_q_d_theta_sum = grad(logq(new_theta), new_theta, create_graph=True)
+            #print("grad sum q", d_log_q_d_theta_sum)
             
-    #         # for i in range(len(new_theta)):
-    #         #     def logq_sansum(theta):
-    #         #         return self._neural_net.log_prob(theta, x[i]) + torch.log(last_proposal[i]) - self._prior.log_prob(theta)
-    #         #     trace = 0
-    #         #     for _ in range (1000):
-    #         #         v = MultivariateNormal(torch.zeros(theta.size(1)), torch.eye(theta.size(1))).sample()
-    #         #         Hv = vhp(logq_sansum, new_theta[i], v)
+            
+            # second_deriv_sum = torch.zeros(len(d_log_q_d_theta_sum[0]))
+            
+            # for i in range (theta.size(1)):
+            #     second_deriv_sum += grad(torch.sum(d_log_q_d_theta_sum[0], dim=0)[i], new_theta, create_graph=True)[0][:,i]
+            # #print("hess sum q", second_deriv_sum)
+
+            # #print("square", d_log_q_d_theta_sum[0]**2)
+            # first_deriv_sum = torch.sum(d_log_q_d_theta_sum[0]**2, dim=1)
+            # loss_sum = second_deriv_sum + 0.5*first_deriv_sum
+            # #print("loss", second_deriv_sum + 0.5*first_deriv_sum)
+            # #print(first_deriv_sum)
+            #-------------SUM---------------#
+
+            #-------------FOR---------------#
+            if(0):
+                d_log_q_d_theta = torch.tensor([])
+                second_deriv = torch.tensor([])
+                for i in range (theta.size(0)):
+                    t = theta[i].requires_grad_(True)
+                    #print(grad(log_proposal[i], t), create_graph=True)
+                    # print(grad(log_proposal[i], t, create_graph=True))
+                    # print(grad(self._prior.log_prob(t), t))
+                    #function = self._neural_net.log_prob(t, x[i]) + log_proposal[i] - self._prior.log_prob(t)
+                    function = self._neural_net.log_prob(t, x[i])
+                    # first_round = self._neural_net.log_prob(t, x[i])- self._prior.log_prob(t)
+                    # log_q_first_round = grad(first_round, t, create_graph=True)[0]
+                    # print("first grad", log_q_first_round)
+                    log_q_prime = grad(function, t, create_graph=True)[0]
+                    #print("q prime", log_q_prime)
+                    d_log_q_d_theta = torch.cat((d_log_q_d_theta, log_q_prime.unsqueeze(0)), dim=0)
+
+                    log_q_second = torch.zeros(1)
+                    for j in range(theta.size(1)):
+                        log_q_second += grad(log_q_prime[j], t, create_graph=True)[0][j]
+                        
+                    second_deriv= torch.cat((second_deriv,  log_q_second), dim=0)
+                #     print(grad(function, t, create_graph=True))
+                # print("grad for q", d_log_q_d_theta)
+                # print("hess for q", second_deriv)
+                first_deriv = torch.sum(d_log_q_d_theta**2, dim=1)
+            #-------------FOR---------------#
+
+            #print("r", second_deriv+0.5*first_deriv)
+          
+  
+            # import sbibm
+            # task = sbibm.get_task("gaussian_linear")  
+            # x_0 = task.get_observation(1)
+            #posterior = MultivariateNormal(x/2, torch.eye(10)/20)
+            #pi = 3.1415927410125732  
+            # def logp(theta):
+            #     # log_posterior = -5*torch.log(torch.ones(1)*2*pi) + 5*torch.log(torch.ones(1)*20) - 10 *torch.sum((theta-x/2)**2, dim=1)
+            #     # print("log", log_posterior)
+            #     #print("post", posterior.log_prob(theta))
+            #     #print("log", posterior.log_prob(theta))#return torch.sum(posterior.log_prob(theta) + log_proposal - self._prior.log_prob(theta))
+            #     return torch.sum(posterior.log_prob(theta))
+            #print("calc", -20*theta + 10*x)
+            #d_log_p_d_theta = grad(logp(new_theta), new_theta, create_graph=True)
+            #print("grad", d_log_q_d_theta)
+            
+            #-------------SUM---------------#
+        
+            posterior = MultivariateNormal(x/2, torch.eye(10)/20)
+            def logp(theta):
+                return torch.sum(posterior.log_prob(theta) + log_proposal - self._prior.log_prob(theta))
+            d_log_p_d_theta_sum = grad(logp(new_theta), new_theta, create_graph=True)
+            # second_deriv_sum = torch.zeros(len(d_log_q_d_theta_sum[0]))
+            # for i in range (theta.size(1)):
+            #     second_deriv_sum += grad(torch.sum(d_log_p_d_theta_sum[0], dim=0)[i], new_theta, create_graph=True)[0][:,i]
+            # print("hess sum p", second_deriv_sum)
+            #print("grad sum p", d_log_p_d_theta_sum)
+            loss_sum_p = 0.5*torch.sum((d_log_q_d_theta_sum[0]-d_log_p_d_theta_sum[0])**2, dim=1)
+            #print("loss sum", loss_sum)
+            #-------------SUM---------------#
+            #-------------FOR---------------#
+            if(0):
+                d_log_p_d_theta = torch.tensor([])
+                #second_deriv = torch.tensor([])
+
+                for i in range (len(theta)):
+                    post= MultivariateNormal(x[i]/2, torch.eye(10)/20)
+
+                    t = theta[i].requires_grad_(True)
+                    function = post.log_prob(t)
                     
-    #         #         vtHv = torch.dot(v, Hv[1])
-    #         #         trace +=vtHv
-    #         #     trace /= 1000
-    #         #     print("t", trace)
+                    log_p_prime = grad(function, t)[0]
+                    
+                    d_log_p_d_theta = torch.cat((d_log_p_d_theta, log_p_prime.unsqueeze(0)), dim=0)
+                    # log_p_second = torch.zeros(1)
+                    # for j in range(theta.size(1)):
+                        
+                    #     log_p_second += grad(log_p_prime[j], t, create_graph=True)[0][j]
+                        
+                    # second_deriv= torch.cat((second_deriv,  log_p_second), dim=0)
 
-    #         # total = hessian(logq, new_theta,  create_graph=True)
-    #         # diag_terms = torch.diagonal(total, dim1=1, dim2=3)
-    #         # second_deriv = torch.sum(torch.sum(diag_terms, dim=0), dim=1)
+                #print("grad_exact", d_log_p_d_theta)
+                loss = 0.5*torch.sum((d_log_q_d_theta-d_log_p_d_theta)**2, dim=1)
+                #print("loss", loss)
 
-    #         # result= []
-    #         # for i in range (len(theta)):
-    #         #     t_ = theta[i].detach().requires_grad_(True)
-                
-    #         #     def log_q(t):
-    #         #         return self._neural_net.log_prob(t, x[i]) + proposal.log_prob(t) - self._prior.log_prob(t)
-    #         #     # log_q(t_).backward()
-    #         #     # d_log_q_d_theta = t_.grad
-    #         #     d_log_q_d_theta = grad(log_q(t_), t_, create_graph=True)
-    #         #     #print("d", d_log_q_d_theta)
-
-    #         #     #first_deriv = torch.sum(d_log_q_d_theta[0]**2)
-                
-    #         #     #print()
-    #         #     second_deriv = []
-    #         #     #dd_log_q_dd_theta = torch.zeros(theta[i].size(0), theta[i].size(0))
-    #         #     second_deriv = 0
-    #         #     for j in range(len(d_log_q_d_theta[0])):
+            #-------------FOR---------------#
+            #print("sous", d_log_q_d_theta_sum[0]-d_log_p_d_theta_sum[0])
+            # print("square", (d_log_q_d_theta_sum[0]-d_log_p_d_theta_sum[0])**2)
+            # print("sum", torch.sum((d_log_q_d_theta_sum[0]-d_log_p_d_theta_sum[0])**2, dim=1))
             
-    #         #         #dd_log_q_dd_theta[j] = grad(d_log_q_d_theta[0][j], t_, create_graph=True)[0]
-    #         #         second_deriv += grad(d_log_q_d_theta[0][j], t_, create_graph=True)[0][j]
-    #         #         #second_deriv.append(dd_log_q_dd_theta)
-    #         #     #print("dd", dd_log_q_dd_theta)
-    #         #     #print("h", hessian(log_q, t_,  create_graph=True))
-    #         #     #second_deriv = torch.trace(hessian(log_q, t_,  create_graph=True))
-    #         #print("s", second_deriv)
-    #         #     #term = second_deriv + 0.5 * first_deriv
-    #         #     #result.append((second_deriv + 0.5 * first_deriv).item()) 
+            
+            #print("l", loss)
+        
+            #print("s", second_deriv)
+            
+            # for i in range(len(new_theta)):
+            #     def logq_sansum(theta):
+            #         return self._neural_net.log_prob(theta, x[i]) + torch.log(last_proposal[i]) - self._prior.log_prob(theta)
+            #     trace = 0
+            #     for _ in range (1000):
+            #         v = MultivariateNormal(torch.zeros(theta.size(1)), torch.eye(theta.size(1))).sample()
+            #         Hv = vhp(logq_sansum, new_theta[i], v)
+                    
+            #         vtHv = torch.dot(v, Hv[1])
+            #         trace +=vtHv
+            #     trace /= 1000
+            #     print("t", trace)
+
+            # total = hessian(logq, new_theta,  create_graph=True)
+            # diag_terms = torch.diagonal(total, dim1=1, dim2=3)
+            # second_deriv = torch.sum(torch.sum(diag_terms, dim=0), dim=1)
+
+            # result= []
+            # for i in range (len(theta)):
+            #     t_ = theta[i].detach().requires_grad_(True)
+                
+            #     def log_q(t):
+            #         return self._neural_net.log_prob(t, x[i]) + proposal.log_prob(t) - self._prior.log_prob(t)
+            #     # log_q(t_).backward()
+            #     # d_log_q_d_theta = t_.grad
+            #     d_log_q_d_theta = grad(log_q(t_), t_, create_graph=True)
+            #     #print("d", d_log_q_d_theta)
+
+            #     #first_deriv = torch.sum(d_log_q_d_theta[0]**2)
+                
+            #     #print()
+            #     second_deriv = []
+            #     #dd_log_q_dd_theta = torch.zeros(theta[i].size(0), theta[i].size(0))
+            #     second_deriv = 0
+            #     for j in range(len(d_log_q_d_theta[0])):
+            
+            #         #dd_log_q_dd_theta[j] = grad(d_log_q_d_theta[0][j], t_, create_graph=True)[0]
+            #         second_deriv += grad(d_log_q_d_theta[0][j], t_, create_graph=True)[0][j]
+            #         #second_deriv.append(dd_log_q_dd_theta)
+            #     #print("dd", dd_log_q_dd_theta)
+            #     #print("h", hessian(log_q, t_,  create_graph=True))
+            #     #second_deriv = torch.trace(hessian(log_q, t_,  create_graph=True))
+            #print("s", second_deriv)
+            #     #term = second_deriv + 0.5 * first_deriv
+            #     #result.append((second_deriv + 0.5 * first_deriv).item()) 
         
         
-    #     #return torch.tensor(result, requires_grad=True)
-        
-    #     return second_deriv+0.5*first_deriv
+        #return torch.tensor(result, requires_grad=True)
+        theta.requires_grad_(False)
+    
+        return loss_sum_p
     
     def _log_prob_proposal_posterior(
         self, 
@@ -195,36 +311,7 @@ class SNPE_D(PosteriorEstimator):
         masks: Tensor, 
         proposal: Optional[Any],
     ) -> Tensor:
-        from torch.autograd import grad
-        from torch.autograd.functional import hessian
-        from torch.autograd.functional import vhp
-        from torch.distributions.multivariate_normal import MultivariateNormal
-        
-        
-        with torch.enable_grad():
- 
-            new_theta = theta.requires_grad_(True)
-            prop = 1.0/(self._round+1)
-            last_proposal = torch.zeros(theta.size(0))
-            for density in self._proposal_roundwise:
-                last_proposal += prop*torch.exp(density.log_prob(theta))
-            def logq(theta):
-                return torch.sum(self._neural_net.log_prob(theta, x) + torch.log(last_proposal) - self._prior.log_prob(theta))
-            
-            d_log_q_d_theta = grad(logq(new_theta), new_theta, create_graph=True)
-            # print("d" , d_log_q_d_theta)
-            
-            first_deriv = torch.sum(d_log_q_d_theta[0]**2, dim=1)
-            #print(first_deriv)
-            second_deriv = torch.zeros(len(d_log_q_d_theta[0]))
-            for i in range (theta.size(1)):
-                
-                second_deriv += grad(torch.sum(d_log_q_d_theta[0], dim=0)[i], new_theta, create_graph=True)[0][:,i]
-            
-            #print("s", second_deriv)
- 
-        
-        return -(second_deriv+0.5*first_deriv)
+        pass
     
 
 
