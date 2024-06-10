@@ -61,7 +61,6 @@ class PosteriorEstimator(NeuralInference, ABC):
 
         See docstring of `NeuralInference` class for all other arguments.
         """
-
         super().__init__(
             prior=prior,
             device=device,
@@ -179,6 +178,7 @@ class PosteriorEstimator(NeuralInference, ABC):
 
         self._theta_roundwise.append(theta)
         self._x_roundwise.append(x)
+        
         self._prior_masks.append(prior_masks)
 
         self._proposal_roundwise.append(proposal)
@@ -255,7 +255,7 @@ class PosteriorEstimator(NeuralInference, ABC):
         """
         # Load data from most recent round.
         self._round = max(self._data_round_index)
-
+        
         if self._round == 0 and self._neural_net is not None:
             assert force_first_round_loss, (
                 "You have already trained this neural network. After you had trained "
@@ -273,7 +273,6 @@ class PosteriorEstimator(NeuralInference, ABC):
 
         # Calibration kernels proposed in Lueckmann, Gonçalves et al., 2017.
         if calibration_kernel is None:
-
             def default_calibration_kernel(x):
                 return ones([len(x)], device=self._device)
 
@@ -302,11 +301,13 @@ class PosteriorEstimator(NeuralInference, ABC):
             resume_training,
             dataloader_kwargs=dataloader_kwargs,
         )
+
         # First round or if retraining from scratch:
         # Call the `self._build_neural_net` with the rounds' thetas and xs as
         # arguments, which will build the neural network.
         # This is passed into NeuralPosterior, to create a neural posterior which
         # can `sample()` and `log_prob()`. The network is accessible via `.net`.
+        
         if self._neural_net is None or retrain_from_scratch:
             # Get theta,x to initialize NN
             theta, x, _ = self.get_simulations(starting_round=start_idx)
@@ -316,6 +317,7 @@ class PosteriorEstimator(NeuralInference, ABC):
                 theta[self.train_indices].to("cpu"),
                 x[self.train_indices].to("cpu"),
             )
+            
             self._x_shape = x_shape_from_simulation(x.to("cpu"))
 
             test_posterior_net_for_multi_d_x(
@@ -323,13 +325,14 @@ class PosteriorEstimator(NeuralInference, ABC):
                 theta.to("cpu"),
                 x.to("cpu"),
             )
-
+            
             del theta, x
 
         # Move entire net to device for training.
         self._neural_net.to(self._device)
-
+        
         if not resume_training:
+        
             self.optimizer = optim.Adam(
                 list(self._neural_net.parameters()), lr=learning_rate
             )
@@ -340,17 +343,22 @@ class PosteriorEstimator(NeuralInference, ABC):
         ):
             # Train for a single epoch.
             self._neural_net.train()
+            
+            
             train_log_probs_sum = 0
             epoch_start_time = time.time()
+           
             for batch in train_loader:
+                
                 self.optimizer.zero_grad()
+                
                 # Get batches on current device.
                 theta_batch, x_batch, masks_batch = (
                     batch[0].to(self._device),
                     batch[1].to(self._device),
                     batch[2].to(self._device),
                 )
-
+                
                 train_losses = self._loss(
                     theta_batch,
                     x_batch,
@@ -358,11 +366,15 @@ class PosteriorEstimator(NeuralInference, ABC):
                     proposal,
                     calibration_kernel,
                     force_first_round_loss=force_first_round_loss,
+                    
                 )
+                
+                
                 train_loss = torch.mean(train_losses)
                 train_log_probs_sum -= train_losses.sum().item()
 
                 train_loss.backward()
+                
                 if clip_max_norm is not None:
                     clip_grad_norm_(
                         self._neural_net.parameters(), max_norm=clip_max_norm
@@ -378,8 +390,10 @@ class PosteriorEstimator(NeuralInference, ABC):
 
             # Calculate validation performance.
             self._neural_net.eval()
+            
+            
             val_log_prob_sum = 0
-
+     
             with torch.no_grad():
                 for batch in val_loader:
                     theta_batch, x_batch, masks_batch = (
@@ -387,6 +401,7 @@ class PosteriorEstimator(NeuralInference, ABC):
                         batch[1].to(self._device),
                         batch[2].to(self._device),
                     )
+                   
                     # Take negative loss here to get validation log_prob.
                     val_losses = self._loss(
                         theta_batch,
@@ -396,8 +411,9 @@ class PosteriorEstimator(NeuralInference, ABC):
                         calibration_kernel,
                         force_first_round_loss=force_first_round_loss,
                     )
+                    
                     val_log_prob_sum -= val_losses.sum().item()
-
+            
             # Take mean over all validation samples.
             self._val_log_prob = val_log_prob_sum / (
                 len(val_loader) * val_loader.batch_size  # type: ignore
@@ -407,7 +423,7 @@ class PosteriorEstimator(NeuralInference, ABC):
             self._summary["epoch_durations_sec"].append(time.time() - epoch_start_time)
 
             self._maybe_show_progress(self._show_progress_bars, self.epoch)
-
+        
         self._report_convergence_at_end(self.epoch, stop_after_epochs, max_num_epochs)
 
         # Update summary.
@@ -586,7 +602,7 @@ class PosteriorEstimator(NeuralInference, ABC):
             # Currently only works for `DensityEstimator` objects.
             # Must be extended ones other Estimators are implemented. See #966,
             loss = -self._log_prob_proposal_posterior(theta, x, masks, proposal)
-
+            
         return calibration_kernel(x) * loss
 
     def _check_proposal(self, proposal):
