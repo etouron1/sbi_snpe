@@ -24,6 +24,7 @@ from sbi.inference.snle.snle_a import SNLE_A
 from sbi.inference.snpe.snpe_a import SNPE_A
 from sbi.inference.snpe.snpe_b import SNPE_B
 from sbi.inference.snpe.snpe_c import SNPE_C  # noqa: F401
+from sbi.inference.snpe.snpe_d import SNPE_D
 from sbi.inference.snre import BNRE, SNRE, SNRE_A, SNRE_B, SNRE_C  # noqa: F401
 
 SNL = SNLE = SNLE_A
